@@ -1,0 +1,357 @@
+<!doctype html>
+<html>
+<head>
+    <title>fig - a GIF decoder</title>
+    <script src='fig.js'></script>
+    <script src='dex.js'></script>
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            border: 0;
+        }
+
+        .viewer {
+            padding: 32px;
+            font-family: Arial, sans-serif;
+            font-size: 14px;
+        }
+
+        .sprite_palettes {
+            border-collapse: collapse;
+        }
+
+        .sprite_palettes .sprite_palette {
+            border-collapse: collapse;
+            border: 0;
+            padding: 0;
+            margin: 0;
+        }
+
+        .sprite_palettes .sprite_palette td {
+            border: 1px solid #000000;
+            padding: 0;
+            margin: 0;
+        }
+
+        .sprite_palettes .sprite_palette td div {
+            width: 16px;
+            height: 16px;
+        }
+    </style>
+</head>
+<body>
+    <div class='viewer'>
+        <p>
+        Platform: <select class='platform'></select>
+        Size: <select class='size'></select>
+        </p>
+        <input class='file' type='file' />
+        <input class='reload_button' type='button' value='Reload' />
+        <div class='preview'>
+        </div>
+        <div class='output'>
+        </div>
+    </div>
+    <script>
+        (function(self) {
+            var saveAs =
+                window.webkitSaveAs
+                || window.mozSaveAs
+                || window.msSaveAs
+                || window.navigator.msSaveBlob && function(blob, name) {
+                            return window.navigator.msSaveBlob(blob, name);
+                    }
+                || function(blob, name) {
+                    var click = document.createEvent("MouseEvent");
+                    click.initMouseEvent("click", true, true, window, 0, 
+                        event.screenX, event.screenY, event.clientX, event.clientY, 
+                        event.ctrlKey, event.altKey, event.shiftKey, event.metaKey, 
+                        0, null);
+                    var a = document.createElement('a');
+                    a.setAttribute('href', URL.createObjectURL(blob));
+                    a.setAttribute('download', name);
+                    a.dispatchEvent(click);
+                };
+
+            var dataUrlToBlob = function(url) {
+                var parts = url.split(',');
+                var contentType = parts[0].split(':')[1].split(';');
+                var mimeType = contentType[0];
+                var encoding = contentType[1];
+                var data = parts[1];
+
+                if (encoding == 'base64') {
+                    var bytes = window.atob(data);
+                    var buffer = new Uint8Array(bytes.length);
+                    for (var i = 0; i < bytes.length; i++) {
+                        buffer[i] = bytes.charCodeAt(i);
+                    }
+                    return new Blob([buffer], {type: mimeType});
+                } else {
+                    return new Blob([data], {type: mimeType});
+                }
+            }
+
+            var canvasToBlob = function(canvas, callback) {
+                if(canvas.toBlob) {
+                    canvas.toBlob(callback);
+                } else {
+                    callback(dataUrlToBlob(canvas.toDataURL()));
+                }
+            }
+
+            var element = {
+                file: document.querySelector('.viewer .file'),
+                platform: document.querySelector('.viewer .platform'),
+                size: document.querySelector('.viewer .size'),
+                reloadButton: document.querySelector('.viewer .reload_button'),
+                preview: document.querySelector('.viewer .preview'),
+                output: document.querySelector('.viewer .output')
+            };
+
+            self.files = [];
+
+            self.init = function() {
+                element.file.addEventListener('change', self.changeFile);
+                element.reloadButton.onclick = function() {
+                    self.changeFile({target: {files: self.files}, preventDefault: function(){}});
+                };
+
+                for(var i = 0; i < dex.platforms.length; i++) {
+                    var platform = dex.platforms[i];
+                    var option = document.createElement('option');
+                    option.value = platform[0];
+                    option.appendChild(document.createTextNode(platform[1].name));
+                    element.platform.appendChild(option);
+                }
+
+                element.platform.value = 'gbc';
+
+                element.platform.onchange = function() {
+                    var old = element.size.value;
+
+                    while(element.size.firstChild) {
+                        element.size.removeChild(element.size.firstChild);
+                    }
+
+                    var platform = dex.platformsByName[element.platform.value];
+                    var sizes = platform.sizes;
+
+                    for(var i = 0; i < sizes.length; i++) {
+                        var val = sizes[i].join('x');
+                        var option = document.createElement('option');
+                        option.value = val;
+                        if(val == old) {
+                            option.selected = 'selected';
+                        }
+                        option.appendChild(document.createTextNode(val));
+                        element.size.appendChild(option);
+                    }
+                }
+
+                element.platform.onchange();
+
+
+                document.ondragover = function() { return false; };
+                document.ondragend = function() { return false; };
+                document.ondrop = self.changeFile;
+            }
+
+
+            self.changeFile = function(event) {
+                event.preventDefault();
+
+                var files = (event.dataTransfer ? event.dataTransfer : event.target).files;
+
+                if(files.length) {
+                    self.files = files;
+
+                    while(element.output.firstChild) {
+                        element.output.removeChild(element.output.firstChild);
+                    }
+
+                    files = Array.prototype.slice.call(files).sort(function(a, b) { return a.name.localeCompare(b.name); });
+
+                    fig.load({
+                        files: files,
+                        oncomplete: function(gifs) {
+                            var frames = [];
+
+                            for(var i = 0; i < gifs.length; i++) {
+                                var gif = gifs[i];
+                                for(var j = 0; j < gif.frames.length; j++) {
+                                    element.output.appendChild(gif.frames[j].canvas);
+                                    frames.push(gif.frames[j]);
+                                }
+                            }
+
+                            
+                            var spec = dex.platformsByName[element.platform.value];
+                            var size = element.size.value.split('x');
+                            size[0] = +size[0];
+                            size[1] = +size[1];
+
+                            var image = dex.framesToIndexedImage(spec, frames);
+                            console.log('indexed image', image);
+
+                            var decompositions = dex.findGlobalRegionDecompositions(image, size, decompositions);
+                            console.log('sprite decompositions', decompositions);
+
+                            var spritePalettes = dex.findSpritePalettes(image, spec, decompositions);
+                            console.log('sprite palettes', spritePalettes);
+
+                            var metasprites = dex.findMetasprites(image, spec, size, spritePalettes, decompositions);
+                            var tileset = dex.findTileset(image, size, metasprites);
+                            console.log('tileset', tileset);
+                            console.log('metasprites', metasprites);
+
+                            var first = false;
+                            var maxSpritesTotal = 0;
+                            var maxScanlineSprites = 0;
+                            var maxScanlinePixels = 0;
+                            for(var f = 0; f < metasprites.length; f++) {
+                                var maxY = 0;
+                                var metasprite = metasprites[f];
+                                for(var m = 0; m < metasprite.length; m++) {
+                                    var sprite = metasprite[m];
+                                    maxY = Math.max(maxY, sprite.y + size[1]);
+                                }
+
+                                var frameScanlineSprites = 0;
+                                var frameScanlinePixels = 0;
+                                for(var i = 0; i < maxY; i++) {
+                                    var spriteCount = 0;
+                                    var pixelCount = 0;
+                                    for(var m = 0; m < metasprite.length; m++) {
+                                        var sprite = metasprite[m];
+                                        if(sprite.y < i + 1 && sprite.y + size[1] > i) {
+                                            spriteCount++;
+                                            pixelCount += size[0];
+                                        }
+                                    }
+                                    frameScanlineSprites = Math.max(frameScanlineSprites, spriteCount);
+                                    frameScanlinePixels = Math.max(frameScanlinePixels, pixelCount); 
+                                }
+
+                                maxSpritesTotal = first ? metasprites[f].length : Math.max(maxSpritesTotal, metasprites[f].length);
+                                maxScanlineSprites = first ? frameScanlineSprites : Math.max(maxScanlineSprites, frameScanlineSprites);
+                                maxScanlinePixels = first ? frameScanlinePixels : Math.max(maxScanlinePixels, frameScanlinePixels);
+                            }
+
+                            var p = document.createElement('p');
+                            p.appendChild(document.createTextNode(
+                                + metasprites.length + ' frames, '
+                                + tileset.length + ' tiles total, '
+                                + maxSpritesTotal + ' / ' + spec.maxSprites + ' sprites per frame max, '
+                                + maxScanlineSprites + ' / ' + spec.scanlineSprites + ' sprites per scanline max, '
+                                + (spec.scanlinePixels != spec.scanlineSprites * size[0] ? maxScanlinePixels + ' / ' + spec.scanlinePixels + ' pixels per scanline max, ' : '')
+                                + spritePalettes.length + ' / ' + spec.maxPalettes + ' sprite palettes of ' + spec.paletteColors + ' colors each.'
+                            ));
+                            element.output.appendChild(p);
+
+                            var failures = [];
+                            if(spritePalettes.length > spec.maxPalettes) {
+                                failures.push('Too many palettes!');
+                            }
+                            if(maxScanlineSprites > spec.scanlineSprites || maxScanlinePixels > spec.scanlinePixels) {
+                                failures.push('Too many sprites / scanline!');
+                            }
+                            if(maxSpritesTotal > spec.maxSprites) {
+                                failures.push('Too many sprites on-screen at once!');
+                            }
+
+                            var p = document.createElement('p');
+                            p.appendChild(document.createTextNode(
+                                failures.length > 0 ? 'FAILED. ' + failures.join(' ') : 'OK.'
+                            ));
+                            element.output.appendChild(p);
+
+                            var p = document.createElement('p');
+                            var canvas = dex.createTilesetCanvas(spec, size, tileset);
+                            p.appendChild(canvas);
+                            element.output.appendChild(p);
+
+                            var p = document.createElement('p');
+                            var table = dex.generatePaletteTable(image, spec, spritePalettes);
+                            p.appendChild(table);
+                            element.output.appendChild(p);
+
+                            var input = document.createElement('input');
+                            input.value = 'Save CHR...';
+                            input.type = 'button';
+                            input.onclick = function() {
+                                var tileblob = dex.encodeTiles(spec, size, tileset);
+                                console.log(files, files[0].name + '.chr');
+                                saveAs(tileblob, files[0].name + '.chr');
+                                console.log(tileblob);
+                            }
+                            p.appendChild(input);
+                            element.output.appendChild(p);
+                        },
+                        onerror: function(file, error) {
+                            alert(file.name + ' is invalid! ' + error)
+                        }
+                    });
+                }
+                return false;
+            };
+
+            self.loadDataUris = function(arguments) {
+                var inputs = arguments.inputs;
+                var oncomplete = arguments.oncomplete || function(){};
+                var blobs = new Array(inputs.length);
+                var remaining = inputs.length;
+
+                for(var i = 0; i < inputs.length; i++) {
+                    (function(i) {
+                        var input = inputs[i];
+                        var xhr = new XMLHttpRequest();
+                        xhr.open('GET', input.data, true);
+                        xhr.responseType = 'arraybuffer';
+
+                        xhr.onload = function(event) {
+                            var blob = new Blob([xhr.response], {type: input.data.match(/^data:(.+);/)[1]});
+                            blob.name = input.name;
+
+                            blobs[i] = blob;
+
+                            remaining--;
+                            if(remaining === 0) {
+                                oncomplete(blobs);
+                            }
+                        }
+
+                        xhr.send(null);
+                    })(i);
+                }
+            }
+
+            self.loadDataUris({
+                inputs: [
+                    /*{
+                        name: "heroidle1x.gif",
+                        data: "data:image/gif;base64,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"
+                    },
+                    {
+                        name: "herowalk1x.gif",
+                        data: "data:image/gif;base64,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"
+                    }*/
+                    {
+                        name: "bunny-walk.gif",
+                        data: "data:image/gif;base64,R0lGODlhEAAUAPcAAH7f51ERbP3ZzuaOvgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACH/C05FVFNDQVBFMi4wAwEAAAAh+QQJEAAAACwAAAAAEAAUAAAIcgABCBxIsKDAAAgHIgxgMICAhwwdQiwoEWJFAQwVPpxYMaPGjRFBUtyIEeHEkSRFEuwI8uTBlhBVAnA4YEDKmhg14nRI06bHmSQv/pxpMuhQiQMWLsz58mHNpziZSgwA9alLhFVrLqSoFWtSgzO/hh0aEAAh+QQJEAAAACwAAAAAEAAUAAAIcgABCBxIsKDBgwUDKByoMIDBAAIiOoQoMWFEiRQrMrwoYOJFhwQzdgSQEeTGjwo1huTI0aTAkh9Vkowp8ePGAQNY4hz5UsBOiBB/vkxJE+PMjkRRYryIs6HCnSOf4pxKFelLqlgXXm3qtGnIAVoZgh0YEAA7"
+                    }
+                ],
+
+                oncomplete: function(files) {
+                    self.files = files;
+                    self.changeFile({target: {files: self.files}, preventDefault: function(){}});
+                }
+            });
+
+
+            self.init();
+        })({});
+    </script>
+</body>
+</html>
